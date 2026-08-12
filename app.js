@@ -1,6 +1,6 @@
 (() => {
   const WEBMAP_ID = "5e88ffc05f0f4bbb968e852d816e09a0";
-  const STORAGE_KEY = "guideline-wo-poc-v014";
+  const STORAGE_KEY = "guideline-wo-poc-v015";
 
   const statusColors = {
     "Open": "#c9891b",
@@ -21,8 +21,7 @@
     woGraphicsLayer: null,
     selectionLayer: null,
     originalBasemap: null,
-    Basemap: null,
-    Extent: null
+    Basemap: null
   };
 
   const els = {};
@@ -321,40 +320,62 @@
     }
 
     const s = state.selected;
-    console.info("Guideline selected asset:", s.layerTitle, s.assetId, s.attributes);
 
-    // Do not rely only on the HTML hidden attribute; make the state explicit.
+    // Flip panel state immediately before doing any optional formatting.
     els.detailEmpty.hidden = true;
     els.assetDetail.hidden = false;
     els.detailEmpty.style.display = "none";
     els.assetDetail.style.display = "block";
+    els.detailPanel.classList.add("open");
 
-    els.assetLayerTitle.textContent = s.layerTitle || "ArcGIS Feature Layer";
+    els.assetLayerTitle.textContent = s.layerTitle || "ArcGIS Asset";
     els.assetTitle.textContent = s.title || s.assetId || "Selected Asset";
     els.assetIdValue.textContent = s.assetId || "—";
 
-    const layerFields = s.layer?.fields || [];
-    const fieldByName = Object.fromEntries(layerFields.map(f => [f.name, f]));
-    const rows = Object.entries(s.attributes || {})
-      .filter(([k,v]) => v !== null && v !== undefined && v !== "" && !/^shape/i.test(k))
-      .slice(0, 24)
-      .map(([k,v]) => {
-        const label = fieldByName[k]?.alias || k;
-        let display = v;
-        if (fieldByName[k]?.type === "date" || (typeof v === "number" && /date|time/i.test(k))) {
-          try {
-            const dt = new Date(v);
-            if (!Number.isNaN(dt.getTime())) display = dt.toLocaleString();
-          } catch {}
-        }
-        return `<div class="attr-row"><div class="attr-key">${escapeHtml(label)}</div><div class="attr-value">${escapeHtml(display)}</div></div>`;
-      });
+    try {
+      const fields = s.layer?.fields || [];
+      const fieldByName = Object.fromEntries(fields.map(f => [f.name, f]));
 
-    els.attributeTable.innerHTML = rows.join("") ||
-      `<div class="attr-row"><div class="attr-value">No readable attributes returned.</div></div>`;
+      const rows = Object.entries(s.attributes || {})
+        .filter(([k, v]) =>
+          v !== null &&
+          v !== undefined &&
+          v !== "" &&
+          !/^shape/i.test(k)
+        )
+        .slice(0, 30)
+        .map(([k, v]) => {
+          const field = fieldByName[k];
+          const label = field?.alias || k;
+          let display = v;
 
-    renderAssetWorkOrders();
-    els.detailPanel.classList.add("open");
+          if (field?.type === "date") {
+            try {
+              const dt = new Date(v);
+              if (!Number.isNaN(dt.getTime())) display = dt.toLocaleString();
+            } catch {}
+          }
+
+          return `<div class="attr-row"><div class="attr-key">${escapeHtml(label)}</div><div class="attr-value">${escapeHtml(display)}</div></div>`;
+        });
+
+      els.attributeTable.innerHTML = rows.join("") ||
+        `<div class="attr-row"><div class="attr-value">Feature selected, but ArcGIS returned no displayable attributes.</div></div>`;
+    } catch (err) {
+      console.error("Attribute formatting failed", err);
+      els.attributeTable.innerHTML =
+        `<div class="attr-row"><div class="attr-value">Feature selected. Attribute formatting encountered an error.</div></div>`;
+    }
+
+    // Work-order rendering must not be able to hide or block the selected asset.
+    try {
+      renderAssetWorkOrders();
+    } catch (err) {
+      console.error("Work-order panel rendering failed", err);
+      els.assetWoList.innerHTML = `<div class="helper">No demo work orders are available for this asset yet.</div>`;
+    }
+
+    console.info("Guideline panel populated:", s.layerTitle, s.assetId, s.attributes);
   }
 
   function resolveOperationalFeatureLayer(result) {
@@ -399,120 +420,131 @@
     return true;
   }
 
-  function geometryAnchorPoint(geometry) {
-    if (!geometry) return null;
-    if (geometry.type === "point") return geometry;
-    if (geometry.type === "polygon" && geometry.centroid) return geometry.centroid;
-    if (geometry.extent?.center) return geometry.extent.center;
-    return null;
-  }
+  function candidateOperationalLayerFromGraphic(graphic, result) {
+    const candidates = [
+      result?.layer,
+      graphic?.layer,
+      graphic?.sourceLayer
+    ].filter(Boolean);
 
-  async function queryLayerAtMapClick(layer, event) {
-    try {
-      if (!layerIsSelectable(layer)) return null;
-      if (!event?.mapPoint) return null;
+    for (const candidate of candidates) {
+      // Exact object match
+      const exact = state.featureLayers.find(layer => layer === candidate);
+      if (exact) return exact;
 
-      // Convert ~12 screen pixels to a real map-space Extent around the click.
-      const screenA = { x: event.x - 12, y: event.y - 12 };
-      const screenB = { x: event.x + 12, y: event.y + 12 };
-      const a = state.view.toMap(screenA);
-      const b = state.view.toMap(screenB);
-      if (!a || !b) return null;
-
-      const extent = new state.Extent({
-        xmin: Math.min(a.x, b.x),
-        ymin: Math.min(a.y, b.y),
-        xmax: Math.max(a.x, b.x),
-        ymax: Math.max(a.y, b.y),
-        spatialReference: event.mapPoint.spatialReference
+      // URL + layerId is the strongest practical service identity.
+      const byUrlLayer = state.featureLayers.find(layer => {
+        if (!candidate.url || !layer.url) return false;
+        if (candidate.url !== layer.url) return false;
+        const a = candidate.layerId ?? candidate.id;
+        const b = layer.layerId ?? layer.id;
+        return a == null || b == null || String(a) === String(b);
       });
+      if (byUrlLayer) return byUrlLayer;
 
-      const result = await layer.queryFeatures({
-        geometry: extent,
-        spatialRelationship: "intersects",
-        where: "1=1",
-        outFields: ["*"],
-        returnGeometry: true,
-        num: 5
-      });
+      const byId = state.featureLayers.find(layer =>
+        candidate.id && layer.id === candidate.id
+      );
+      if (byId) return byId;
 
-      if (!result?.features?.length) return null;
-
-      const ranked = result.features.map(graphic => {
-        let distance = Number.POSITIVE_INFINITY;
-        try {
-          const anchor = geometryAnchorPoint(graphic.geometry);
-          if (anchor) {
-            const p = state.view.toScreen(anchor);
-            if (p) distance = Math.hypot(p.x - event.x, p.y - event.y);
-          }
-        } catch {}
-        return { graphic, distance };
-      }).sort((a, b) => a.distance - b.distance);
-
-      return {
-        layer,
-        graphic: ranked[0].graphic,
-        distance: ranked[0].distance
-      };
-    } catch (err) {
-      console.debug("Map-click query skipped layer", layer?.title, err);
-      return null;
+      const byTitle = state.featureLayers.find(layer =>
+        candidate.title && layer.title === candidate.title
+      );
+      if (byTitle) return byTitle;
     }
+
+    // Return the graphic's own feature layer if it is usable, even if it was not
+    // the exact WebMap layer object we indexed. The side panel can still render it.
+    const fallback = graphic?.layer || graphic?.sourceLayer || result?.layer;
+    return fallback?.type === "feature" ? fallback : null;
   }
 
-  async function selectAssetFromMapClick(event) {
-    const layers = state.featureLayers.filter(layerIsSelectable);
-    if (!layers.length) return null;
+  function makeDirectAssetSelection(layer, graphic) {
+    const attrs = { ...(graphic?.attributes || {}) };
 
-    // Directly query all visible operational FeatureLayers. This is deliberately
-    // independent of ArcGIS popup and hitTest behavior.
-    const matches = (await Promise.all(
-      layers.map(layer => queryLayerAtMapClick(layer, event))
-    )).filter(Boolean);
+    // Panel rendering must NEVER depend on asset-ID detection succeeding.
+    let assetId = "Unindexed Asset";
+    try {
+      const idField = getCandidateIdField(layer);
+      if (idField && attrs[idField] !== undefined && attrs[idField] !== null && attrs[idField] !== "") {
+        assetId = String(attrs[idField]);
+      } else {
+        const candidates = [
+          "GIS_ID", "GISID", "ASSET_ID", "ASSETID", "FACILITYID", "FACILITY_ID",
+          "ID", "NAME", "Name", "OBJECTID", "ObjectID"
+        ];
+        const found = candidates.find(k => attrs[k] !== undefined && attrs[k] !== null && attrs[k] !== "");
+        if (found) assetId = String(attrs[found]);
+      }
+    } catch (err) {
+      console.debug("Asset ID detection skipped", err);
+    }
 
-    if (!matches.length) return null;
+    const title = getDisplayTitle(layer, attrs, assetId);
 
-    // Prefer the feature spatially closest to the click. If equal, prefer the
-    // later/top-most operational layer.
-    const order = new Map(state.featureLayers.map((layer, i) => [layer, i]));
-    matches.sort((a, b) => {
-      if (Math.abs(a.distance - b.distance) > 0.25) return a.distance - b.distance;
-      return (order.get(b.layer) ?? 0) - (order.get(a.layer) ?? 0);
-    });
+    return {
+      layer,
+      graphic,
+      attributes: attrs,
+      geometry: graphic?.geometry || null,
+      layerTitle: layer?.title || "ArcGIS Asset",
+      assetId,
+      title
+    };
+  }
 
-    return matches[0];
+  function renderDirectSelection(layer, graphic) {
+    state.selected = makeDirectAssetSelection(layer, graphic);
+
+    // Render panel FIRST. Nothing after this point can block it.
+    renderSelectedAsset();
+
+    // Selection highlight is cosmetic only.
+    try {
+      renderSelectionGraphic();
+    } catch (err) {
+      console.debug("Selection highlight skipped", err);
+    }
   }
 
   async function onMapClick(event) {
     try {
       if (event?.stopPropagation) event.stopPropagation();
 
+      // Never allow the stock ArcGIS popup experience.
       if (state.view) {
         state.view.popupEnabled = false;
         state.view.popup = null;
       }
 
-      const selection = await selectAssetFromMapClick(event);
+      const hit = await state.view.hitTest(event);
 
-      if (!selection) {
-        clearSelection();
+      // Take the ArcGIS graphic that was actually clicked.
+      // Ignore our own work-order/selection graphics and non-feature results.
+      for (const result of hit.results) {
+        const graphic = result?.graphic;
+        if (!graphic) continue;
+
+        const rawLayer = result?.layer || graphic?.layer || graphic?.sourceLayer;
+        if (rawLayer === state.woGraphicsLayer || rawLayer === state.selectionLayer) continue;
+
+        if (!graphic.attributes || !Object.keys(graphic.attributes).length) continue;
+
+        const layer = candidateOperationalLayerFromGraphic(graphic, result);
+        if (!layer) continue;
+
+        // If this maps to one of our indexed operational layers, respect visibility.
+        const indexed = state.featureLayers.find(l => l === layer);
+        if (indexed && !layerIsSelectable(indexed)) continue;
+
+        renderDirectSelection(layer, graphic);
         return;
       }
 
-      state.selected = makeAssetSelection(selection.layer, selection.graphic);
-
-      // Render before highlighting so a GraphicsLayer symbol issue can never
-      // prevent the information panel from updating.
-      renderSelectedAsset();
-
-      try {
-        renderSelectionGraphic();
-      } catch (highlightError) {
-        console.debug("Selection highlight skipped", highlightError);
-      }
+      // If ArcGIS returned no selectable graphic, clear the Guideline selection.
+      clearSelection();
     } catch (err) {
-      console.error("Guideline asset selection failed", err);
+      console.error("Guideline direct asset selection failed", err);
       clearSelection();
     }
   }
@@ -724,14 +756,12 @@
       "esri/widgets/Expand",
       "esri/widgets/Legend",
       "esri/layers/GraphicsLayer",
-      "esri/Basemap",
-      "esri/geometry/Extent"
-    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap, Extent) => {
+      "esri/Basemap"
+    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap) => {
       try {
         const webmap = new WebMap({ portalItem: { id: WEBMAP_ID } });
         state.webmap = webmap;
         state.Basemap = Basemap;
-        state.Extent = Extent;
         state.woGraphicsLayer = new GraphicsLayer({ title: "Demo Work Orders", listMode: "hide" });
         state.selectionLayer = new GraphicsLayer({ title: "Selected Asset", listMode: "hide" });
         webmap.addMany([state.woGraphicsLayer, state.selectionLayer]);
