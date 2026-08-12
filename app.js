@@ -1,6 +1,6 @@
 (() => {
   const WEBMAP_ID = "5e88ffc05f0f4bbb968e852d816e09a0";
-  const STORAGE_KEY = "guideline-wo-poc-v017";
+  const STORAGE_KEY = "guideline-wo-poc-v018";
 
   const statusColors = {
     "Open": "#c9891b",
@@ -462,54 +462,48 @@
     const previewJobs = [];
 
     for (const client of orderedClients) {
-      const clientWrap = document.createElement("div");
-      clientWrap.className = "client-layer-group";
+      const clientName = clientDisplayName(client);
 
-      const header = document.createElement("div");
-      header.className = "layer-row client-layer-row";
+      // ===== ASSETS PARENT =====
+      const assetGroup = document.createElement("div");
+      assetGroup.className = "client-layer-group parent-layer-group";
 
-      const clientVisible = state.clientMasterVisibility.get(client) ?? true;
-      const clientExpanded = state.expandedClients.has(client);
+      const assetHeader = document.createElement("div");
+      assetHeader.className = "layer-row parent-layer-row";
 
-      header.appendChild(createEyeButton(clientVisible, clientDisplayName(client), () => {
-        state.clientMasterVisibility.set(client, !clientVisible);
-        applyOperationalVisibility();
-        renderWorkOrderGraphics();
-        renderCustomLayerTree();
-      }));
-
-      header.appendChild(createArrowButton(clientExpanded, clientDisplayName(client), () => {
-        if (clientExpanded) state.expandedClients.delete(client);
+      const assetExpanded = state.expandedClients.has(client);
+      assetHeader.appendChild(createArrowButton(assetExpanded, `${clientName} Assets`, () => {
+        if (assetExpanded) state.expandedClients.delete(client);
         else state.expandedClients.add(client);
         renderCustomLayerTree();
       }));
 
-      const headerLabel = document.createElement("div");
-      headerLabel.className = "layer-label client-label";
-      headerLabel.textContent = clientDisplayName(client);
-      header.appendChild(headerLabel);
+      const assetHeaderLabel = document.createElement("div");
+      assetHeaderLabel.className = "layer-label client-label";
+      assetHeaderLabel.textContent = `${clientName} Assets`;
+      assetHeader.appendChild(assetHeaderLabel);
 
-      clientWrap.appendChild(header);
+      const clientVisible = state.clientMasterVisibility.get(client) ?? true;
+      assetHeader.appendChild(createEyeButton(clientVisible, `${clientName} Assets`, () => {
+        state.clientMasterVisibility.set(client, !clientVisible);
+        applyOperationalVisibility();
+        renderCustomLayerTree();
+      }));
 
-      const children = document.createElement("div");
-      children.className = "client-layer-children";
-      children.hidden = !clientExpanded;
+      assetGroup.appendChild(assetHeader);
+
+      const assetChildren = document.createElement("div");
+      assetChildren.className = "client-layer-children";
+      assetChildren.hidden = !assetExpanded;
 
       for (const layer of (groups.get(client) || [])) {
         const entries = getCachedRendererEntries(layer);
         const multi = entries.length > 1;
+
         const row = document.createElement("div");
         row.className = "layer-row asset-layer-row";
 
-        const userVisible = state.layerUserVisibility.get(layer.id) ?? true;
-        const effectiveVisible = effectiveLayerVisible(layer);
-
-        row.appendChild(createEyeButton(effectiveVisible, layer.title, () => {
-          state.layerUserVisibility.set(layer.id, !userVisible);
-          applyOperationalVisibility();
-          renderCustomLayerTree();
-        }));
-
+        // Left: symbol for single-symbol layers, arrow for multi-symbol layers.
         if (multi) {
           const expanded = state.expandedLayers.has(layer.id);
           row.appendChild(createArrowButton(expanded, layer.title, () => {
@@ -521,19 +515,28 @@
           const symbolCell = document.createElement("div");
           symbolCell.className = "layer-symbol";
           row.appendChild(symbolCell);
-          if (entries[0]?.symbol) {
-            previewJobs.push(renderSymbolPreview(symbolCell, entries[0].symbol, layer.geometryType));
-          } else {
-            previewJobs.push(renderSymbolPreview(symbolCell, null, layer.geometryType));
-          }
+          previewJobs.push(
+            renderSymbolPreview(symbolCell, entries[0]?.symbol || null, layer.geometryType)
+          );
         }
 
+        // Center: label.
         const label = document.createElement("div");
         label.className = "layer-label";
         label.textContent = cleanLayerTitle(layer, client);
         label.title = layer.title;
         row.appendChild(label);
-        children.appendChild(row);
+
+        // Right: visibility eye.
+        const userVisible = state.layerUserVisibility.get(layer.id) ?? true;
+        const effectiveVisible = effectiveLayerVisible(layer);
+        row.appendChild(createEyeButton(effectiveVisible, layer.title, () => {
+          state.layerUserVisibility.set(layer.id, !userVisible);
+          applyOperationalVisibility();
+          renderCustomLayerTree();
+        }));
+
+        assetChildren.appendChild(row);
 
         if (multi) {
           const sub = document.createElement("div");
@@ -545,78 +548,82 @@
           for (const entry of entries) {
             const child = document.createElement("div");
             child.className = "layer-row symbol-category-row";
-            const canToggle = !!entry.clause;
-            const visible = !hidden.has(entry.key);
-
-            child.appendChild(createEyeButton(visible, `${layer.title}: ${entry.label}`, async () => {
-              if (!canToggle) return;
-              const next = new Set(state.categoryHidden.get(layer.id) || []);
-              if (next.has(entry.key)) next.delete(entry.key);
-              else next.add(entry.key);
-              state.categoryHidden.set(layer.id, next);
-              await applyCategoryVisibility(layer);
-              renderCustomLayerTree();
-            }, !canToggle));
 
             const symbolCell = document.createElement("div");
             symbolCell.className = "layer-symbol";
             child.appendChild(symbolCell);
-            previewJobs.push(renderSymbolPreview(symbolCell, entry.symbol, layer.geometryType));
+            previewJobs.push(
+              renderSymbolPreview(symbolCell, entry.symbol, layer.geometryType)
+            );
 
             const childLabel = document.createElement("div");
             childLabel.className = "layer-label category-label";
             childLabel.textContent = entry.label;
-            if (!canToggle) childLabel.title = "This renderer category can be displayed but cannot be independently filtered in this POC.";
             child.appendChild(childLabel);
+
+            const canToggle = !!entry.clause;
+            const visible = !hidden.has(entry.key);
+            child.appendChild(createEyeButton(
+              visible,
+              `${layer.title}: ${entry.label}`,
+              async () => {
+                if (!canToggle) return;
+                const next = new Set(state.categoryHidden.get(layer.id) || []);
+                if (next.has(entry.key)) next.delete(entry.key);
+                else next.add(entry.key);
+                state.categoryHidden.set(layer.id, next);
+                await applyCategoryVisibility(layer);
+                renderCustomLayerTree();
+              },
+              !canToggle
+            ));
 
             sub.appendChild(child);
           }
 
-          children.appendChild(sub);
+          assetChildren.appendChild(sub);
         }
       }
 
-      // Client work-order pseudo layer. It uses the same nested behavior as a
-      // multi-symbol ArcGIS layer, with each WO status as a child symbol.
-      const woRow = document.createElement("div");
-      woRow.className = "layer-row asset-layer-row wo-layer-row";
+      assetGroup.appendChild(assetChildren);
+      els.layerList.appendChild(assetGroup);
 
-      const woVisible = workOrderClientVisible(client);
-      woRow.appendChild(createEyeButton(woVisible, `${clientDisplayName(client)} Work Orders`, () => {
-        state.woClientVisibility.set(client, !woVisible);
-        renderWorkOrderGraphics();
-        renderCustomLayerTree();
-      }));
+      // ===== WORK ORDERS PARENT =====
+      // This is a sibling of Assets, not nested inside it.
+      const woGroup = document.createElement("div");
+      woGroup.className = "client-layer-group parent-layer-group wo-parent-group";
+
+      const woHeader = document.createElement("div");
+      woHeader.className = "layer-row parent-layer-row";
 
       const woExpanded = state.expandedWoClients.has(client);
-      woRow.appendChild(createArrowButton(woExpanded, `${clientDisplayName(client)} Work Orders`, () => {
+      woHeader.appendChild(createArrowButton(woExpanded, `${clientName} Work Orders`, () => {
         if (woExpanded) state.expandedWoClients.delete(client);
         else state.expandedWoClients.add(client);
         renderCustomLayerTree();
       }));
 
-      const woLabel = document.createElement("div");
-      woLabel.className = "layer-label wo-layer-label";
-      woLabel.textContent = `${clientDisplayName(client)} Work Orders`;
-      woRow.appendChild(woLabel);
-      children.appendChild(woRow);
+      const woHeaderLabel = document.createElement("div");
+      woHeaderLabel.className = "layer-label client-label wo-layer-label";
+      woHeaderLabel.textContent = `${clientName} Work Orders`;
+      woHeader.appendChild(woHeaderLabel);
 
-      const woSub = document.createElement("div");
-      woSub.className = "symbol-category-list";
-      woSub.hidden = !woExpanded;
+      const woVisible = workOrderClientVisible(client);
+      woHeader.appendChild(createEyeButton(woVisible, `${clientName} Work Orders`, () => {
+        state.woClientVisibility.set(client, !woVisible);
+        renderWorkOrderGraphics();
+        renderCustomLayerTree();
+      }));
+
+      woGroup.appendChild(woHeader);
+
+      const woChildren = document.createElement("div");
+      woChildren.className = "client-layer-children";
+      woChildren.hidden = !woExpanded;
 
       Object.keys(statusColors).forEach(status => {
         const statusRow = document.createElement("div");
         statusRow.className = "layer-row symbol-category-row";
-
-        const statusVisible = workOrderStatusVisible(client, status);
-        statusRow.appendChild(createEyeButton(statusVisible, `${clientDisplayName(client)} ${status} work orders`, () => {
-          const map = state.woStatusVisibility.get(client) || new Map();
-          map.set(status, !statusVisible);
-          state.woStatusVisibility.set(client, map);
-          renderWorkOrderGraphics();
-          renderCustomLayerTree();
-        }));
 
         const swatch = document.createElement("div");
         swatch.className = "layer-symbol";
@@ -627,12 +634,21 @@
         statusLabel.className = "layer-label category-label";
         statusLabel.textContent = status;
         statusRow.appendChild(statusLabel);
-        woSub.appendChild(statusRow);
+
+        const statusVisible = workOrderStatusVisible(client, status);
+        statusRow.appendChild(createEyeButton(statusVisible, `${clientName} ${status} work orders`, () => {
+          const map = state.woStatusVisibility.get(client) || new Map();
+          map.set(status, !statusVisible);
+          state.woStatusVisibility.set(client, map);
+          renderWorkOrderGraphics();
+          renderCustomLayerTree();
+        }));
+
+        woChildren.appendChild(statusRow);
       });
 
-      children.appendChild(woSub);
-      clientWrap.appendChild(children);
-      els.layerList.appendChild(clientWrap);
+      woGroup.appendChild(woChildren);
+      els.layerList.appendChild(woGroup);
     }
 
     await Promise.allSettled(previewJobs);

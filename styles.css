@@ -280,3 +280,27 @@ button { cursor: pointer; }
 .symbol-polygon {
   background: rgba(102,119,132,.18);
 }
+
+
+/* v0.1.8: left symbol/arrow, center label, right visibility eye */
+.layer-row {
+  grid-template-columns: 26px minmax(0, 1fr) 26px !important;
+}
+.parent-layer-row {
+  min-height: 34px;
+  padding: 3px 2px;
+}
+.parent-layer-group + .parent-layer-group {
+  margin-top: 3px;
+}
+.wo-parent-group {
+  border-top: 0 !important;
+  padding-top: 0 !important;
+}
+.layer-eye {
+  justify-self: end;
+}
+.layer-arrow,
+.layer-symbol {
+  justify-self: center;
+}
