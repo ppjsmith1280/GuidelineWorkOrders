@@ -19,7 +19,9 @@
     woFilter: "all",
     searchGraphics: [],
     woGraphicsLayer: null,
-    selectionLayer: null
+    selectionLayer: null,
+    originalBasemap: null,
+    Basemap: null
   };
 
   const els = {};
@@ -53,7 +55,7 @@
 
   function initDom() {
     [
-      "loadingOverlay", "districtSelect", "assetSearch", "assetSearchBtn", "searchStatus", "searchResults",
+      "loadingOverlay", "districtSelect", "basemapSelect", "assetSearch", "assetSearchBtn", "searchStatus", "searchResults",
       "woCountBadge", "workOrderList", "layerList", "toggleLayerPanelBtn", "detailPanel", "detailEmpty",
       "assetDetail", "assetLayerTitle", "assetTitle", "assetIdValue", "attributeTable", "assetWorkOrders",
       "createWoBtn", "woDialog", "woForm", "dialogAssetLabel", "woType", "woDescription", "woPriority",
@@ -63,6 +65,7 @@
     els.assetSearchBtn.addEventListener("click", runAssetSearch);
     els.assetSearch.addEventListener("keydown", e => { if (e.key === "Enter") runAssetSearch(); });
     els.districtSelect.addEventListener("change", applyDistrictFilter);
+    els.basemapSelect.addEventListener("change", changeBasemap);
     els.createWoBtn.addEventListener("click", openWoDialog);
     els.saveWoBtn.addEventListener("click", createWorkOrder);
     els.resetDemoBtn.addEventListener("click", resetDemoData);
@@ -188,20 +191,59 @@
     els.toggleLayerPanelBtn.textContent = hidden ? "Hide" : "Show";
   }
 
+  function layerMatchesClient(layer, client) {
+    const title = String(layer?.title || "").toUpperCase().replaceAll(" ", "").replaceAll("_", "").replaceAll("-", "");
+    if (client === "HCMUD71") return title.includes("HCMUD71") || title.includes("HCMUD071");
+    if (client === "FBLID2") return title.includes("FBLID2") || title.includes("FBLID02");
+    return true;
+  }
+
   function applyDistrictFilter() {
     const val = els.districtSelect.value;
-    const allLayers = state.webmap?.allLayers?.toArray?.() || [];
-    allLayers.forEach(layer => {
-      if (!layer || layer.type === "graphics") return;
-      const title = String(layer.title || "").toUpperCase().replaceAll(" ", "").replaceAll("_", "");
-      if (val === "all") {
-        if (layer.__guidelineOriginalVisible !== undefined) layer.visible = layer.__guidelineOriginalVisible;
-        return;
+
+    // IMPORTANT: filter operational FeatureLayers only.
+    // Never touch webmap.basemap.baseLayers/referenceLayers.
+    state.featureLayers.forEach(layer => {
+      if (!layer) return;
+      if (layer.__guidelineOriginalVisible === undefined) {
+        layer.__guidelineOriginalVisible = layer.visible;
       }
-      if (layer.__guidelineOriginalVisible === undefined) layer.__guidelineOriginalVisible = layer.visible;
-      if (val === "HCMUD71") layer.visible = title.includes("HCMUD71") || title.includes("HCMUD071");
-      if (val === "FBLID2") layer.visible = title.includes("FBLID2") || title.includes("FBLID02");
+
+      if (val === "all") {
+        layer.visible = layer.__guidelineOriginalVisible;
+      } else {
+        layer.visible = layerMatchesClient(layer, val);
+      }
     });
+
+    // Clear a selected asset if its layer is now filtered out.
+    if (state.selected && !state.selected.layer.visible) {
+      clearSelection();
+    }
+  }
+
+  function changeBasemap() {
+    if (!state.webmap || !state.Basemap) return;
+    const id = els.basemapSelect.value;
+    try {
+      if (id === "webmap") {
+        state.webmap.basemap = state.originalBasemap;
+      } else {
+        const basemap = state.Basemap.fromId(id);
+        if (basemap) state.webmap.basemap = basemap;
+      }
+    } catch (err) {
+      console.warn("Basemap change failed", err);
+      els.basemapSelect.value = "webmap";
+      state.webmap.basemap = state.originalBasemap;
+    }
+  }
+
+  function clearSelection() {
+    state.selected = null;
+    if (state.selectionLayer) state.selectionLayer.removeAll();
+    renderSelectedAsset();
+    els.detailPanel.classList.remove("open");
   }
 
   function getCandidateIdField(layer, attributes) {
@@ -290,10 +332,29 @@
 
   async function onMapClick(event) {
     try {
-      const hit = await state.view.hitTest(event, { include: state.featureLayers });
-      const result = hit.results.find(r => r.graphic && r.graphic.layer && r.graphic.layer.type === "feature");
-      if (!result) return;
-      state.selected = makeAssetSelection(result.graphic.layer, result.graphic);
+      // Hit-test the map ourselves. ArcGIS's stock popup is disabled in v0.1.1.
+      const hit = await state.view.hitTest(event);
+
+      const result = hit.results.find(r => {
+        const graphic = r.graphic;
+        const layer = r.layer || graphic?.layer;
+        if (!graphic || !layer) return false;
+        if (layer === state.woGraphicsLayer || layer === state.selectionLayer) return false;
+        if (layer.type !== "feature") return false;
+        return graphic.attributes && Object.keys(graphic.attributes).length > 0;
+      });
+
+      if (!result) {
+        clearSelection();
+        return;
+      }
+
+      const layer = result.layer || result.graphic.layer;
+      if (!layer.loaded) {
+        try { await layer.load(); } catch {}
+      }
+
+      state.selected = makeAssetSelection(layer, result.graphic);
       renderSelectedAsset();
       renderSelectionGraphic();
     } catch (err) {
@@ -375,41 +436,82 @@
     }
   }
 
+  function searchFieldScore(field) {
+    const n = `${field.name} ${field.alias || ""}`.toLowerCase();
+    let score = 0;
+    if (/asset.?id/.test(n)) score += 120;
+    if (/facility.?id/.test(n)) score += 110;
+    if (/cityworks/.test(n) && /id/.test(n)) score += 100;
+    if (/unique.?id/.test(n)) score += 95;
+    if (/(^|\\W)id(\\W|$)/.test(n)) score += 70;
+    if (/name/.test(n)) score += 55;
+    if (/description|desc/.test(n)) score += 35;
+    if (/address|location/.test(n)) score += 30;
+    if (/globalid|objectid|shape/.test(n)) score -= 25;
+    return score;
+  }
+
+  async function searchOneLayer(layer, term) {
+    try {
+      const fields = (layer.fields || [])
+        .filter(f => f.type === "string")
+        .map(f => ({ field: f, score: searchFieldScore(f) }))
+        .sort((a,b) => b.score - a.score)
+        .slice(0, 8)
+        .map(x => x.field);
+
+      if (!fields.length) return [];
+
+      const escaped = term.replaceAll("'", "''");
+      const where = fields.map(f => `${f.name} LIKE '%${escaped}%'`).join(" OR ");
+      const res = await layer.queryFeatures({
+        where,
+        outFields: ["*"],
+        returnGeometry: true,
+        num: 8
+      });
+      return res.features.map(graphic => ({ layer, graphic }));
+    } catch (err) {
+      console.debug("Search skipped layer", layer.title, err);
+      return [];
+    }
+  }
+
   async function runAssetSearch() {
     const term = els.assetSearch.value.trim();
     if (!term || term.length < 2) {
       els.searchStatus.textContent = "Enter at least 2 characters.";
       return;
     }
-    els.searchStatus.textContent = "Searching visible feature layers…";
+
+    els.searchStatus.textContent = "Searching ArcGIS asset layers…";
     els.searchResults.hidden = true;
     els.searchResults.innerHTML = "";
-    const results = [];
-    const layers = state.featureLayers.filter(l => l.visible && l.loaded);
-    for (const layer of layers) {
-      if (results.length >= 30) break;
-      try {
-        const stringFields = (layer.fields || []).filter(f => f.type === "string").slice(0, 14);
-        if (!stringFields.length) continue;
-        const escaped = term.replaceAll("'", "''");
-        const where = stringFields.map(f => `${f.name} LIKE '%${escaped}%'`).join(" OR ");
-        const res = await layer.queryFeatures({ where, outFields: ["*"], returnGeometry: true, num: Math.max(1, 30 - results.length) });
-        res.features.forEach(g => results.push({ layer, graphic: g }));
-      } catch (err) {
-        console.debug("Search skipped layer", layer.title, err);
-      }
-    }
+
+    const client = els.districtSelect.value;
+    const layers = state.featureLayers.filter(l => {
+      if (!l.loaded || !l.visible) return false;
+      return client === "all" || layerMatchesClient(l, client);
+    });
+
+    // Query layers concurrently. This is still live ArcGIS search, but materially
+    // faster than the sequential v0.1 approach.
+    const batches = await Promise.all(layers.map(layer => searchOneLayer(layer, term)));
+    const results = batches.flat().slice(0, 30);
+
     if (!results.length) {
-      els.searchStatus.textContent = "No matching assets found in visible searchable layers.";
+      els.searchStatus.textContent = "No matching assets found in the current client/layers.";
       return;
     }
+
     els.searchStatus.textContent = `${results.length} result${results.length === 1 ? "" : "s"}`;
-    els.searchResults.innerHTML = results.slice(0,30).map((r,i) => {
+    els.searchResults.innerHTML = results.map((r,i) => {
       const s = makeAssetSelection(r.layer, r.graphic);
       r.selection = s;
       return `<button type="button" class="search-result" data-result-index="${i}"><div class="search-result-title">${escapeHtml(s.assetId)}</div><div class="search-result-sub">${escapeHtml(s.layerTitle)} · ${escapeHtml(s.title)}</div></button>`;
     }).join("");
     els.searchResults.hidden = false;
+
     els.searchResults.querySelectorAll(".search-result").forEach(btn => {
       btn.addEventListener("click", async () => {
         const r = results[Number(btn.dataset.resultIndex)];
@@ -442,11 +544,13 @@
       "esri/widgets/Home",
       "esri/widgets/Expand",
       "esri/widgets/Legend",
-      "esri/layers/GraphicsLayer"
-    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer) => {
+      "esri/layers/GraphicsLayer",
+      "esri/Basemap"
+    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap) => {
       try {
         const webmap = new WebMap({ portalItem: { id: WEBMAP_ID } });
         state.webmap = webmap;
+        state.Basemap = Basemap;
         state.woGraphicsLayer = new GraphicsLayer({ title: "Demo Work Orders", listMode: "hide" });
         state.selectionLayer = new GraphicsLayer({ title: "Selected Asset", listMode: "hide" });
         webmap.addMany([state.woGraphicsLayer, state.selectionLayer]);
@@ -454,13 +558,15 @@
         const view = new MapView({
           container: "viewDiv",
           map: webmap,
-          popup: { dockEnabled: false },
+          popupEnabled: false,
           highlightOptions: { color: "#00a6d6", haloOpacity: .8, fillOpacity: .15 }
         });
         state.view = view;
 
         await view.when();
+        state.originalBasemap = webmap.basemap;
         await discoverFeatureLayers();
+        state.featureLayers.forEach(layer => { layer.popupEnabled = false; });
         seedLayerOriginalVisibility();
 
         const layerList = new LayerList({ view, container: "layerList" });
@@ -472,8 +578,11 @@
         view.on("click", onMapClick);
         view.on("pointer-move", async evt => {
           try {
-            const hit = await view.hitTest(evt, { include: state.featureLayers });
-            view.container.style.cursor = hit.results.some(r => r.graphic?.layer?.type === "feature") ? "pointer" : "default";
+            const hit = await view.hitTest(evt);
+            view.container.style.cursor = hit.results.some(r => {
+              const layer = r.layer || r.graphic?.layer;
+              return layer?.type === "feature" && layer !== state.woGraphicsLayer && layer !== state.selectionLayer;
+            }) ? "pointer" : "default";
           } catch {}
         });
 

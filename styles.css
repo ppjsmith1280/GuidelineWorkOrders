@@ -116,3 +116,7 @@ button { cursor: pointer; }
   .mobile-sidebar-btn { display: block; }
   .two-col { grid-template-columns: 1fr; }
 }
+
+/* v0.1.1 */
+#basemapSelect { margin-bottom: 2px; }
+.asset-detail-active { border-left-color: #9fc7dc; }

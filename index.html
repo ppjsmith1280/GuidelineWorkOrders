@@ -20,7 +20,7 @@
         </div>
       </div>
       <div class="top-actions">
-        <span class="demo-badge">DEMO v0.1</span>
+        <span class="demo-badge">DEMO v0.1.1</span>
         <button id="resetDemoBtn" class="ghost-btn" type="button">Reset demo data</button>
       </div>
     </header>
@@ -37,12 +37,27 @@
         </section>
 
         <section class="panel-section compact">
+          <label class="field-label" for="basemapSelect">Basemap</label>
+          <select id="basemapSelect" class="control">
+            <option value="webmap" selected>Web Map Default</option>
+            <option value="streets-navigation-vector">Navigation Streets</option>
+            <option value="streets-vector">Streets</option>
+            <option value="topo-vector">Topographic</option>
+            <option value="gray-vector">Light Gray Canvas</option>
+            <option value="dark-gray-vector">Dark Gray Canvas</option>
+            <option value="satellite">Imagery</option>
+            <option value="hybrid">Imagery Hybrid</option>
+          </select>
+          <div class="helper">Changes only the ArcGIS basemap. Asset layers stay in place.</div>
+        </section>
+
+        <section class="panel-section compact">
           <label class="field-label" for="assetSearch">Search asset</label>
           <div class="search-row">
             <input id="assetSearch" class="control" type="search" placeholder="Asset ID, layer, keyword" autocomplete="off" />
             <button id="assetSearchBtn" class="primary-btn small" type="button">Search</button>
           </div>
-          <div id="searchStatus" class="helper" aria-live="polite">Searches visible feature layers.</div>
+          <div id="searchStatus" class="helper" aria-live="polite">Searches current ArcGIS asset layers. This POC queries ArcGIS live.</div>
           <div id="searchResults" class="search-results" hidden></div>
         </section>
 
@@ -96,7 +111,7 @@
           </div>
 
           <div class="detail-section">
-            <div class="detail-section-title">ArcGIS Attributes</div>
+            <div class="detail-section-title">Asset Details</div>
             <div id="attributeTable" class="attribute-table"></div>
           </div>
 
