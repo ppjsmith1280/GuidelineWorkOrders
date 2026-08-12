@@ -1,10 +1,10 @@
-# Guideline Asset Management – Work Order POC v0.1.2
+# Guideline Asset Management – Work Order POC v0.1.3
 
 GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 
 `5e88ffc05f0f4bbb968e852d816e09a0`
 
-## v0.1.2 changes
+## v0.1.3 changes
 
 - ArcGIS stock popups are disabled.
 - Clicking a mapped FeatureLayer asset now opens the custom in-app Asset / Work Order panel.
@@ -27,7 +27,7 @@ GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 ## GitHub Pages
 
 1. Unzip this package.
-2. Upload the **contents** of the `Guideline_WO_POC_v0.1.2` folder to the repository root.
+2. Upload the **contents** of the `Guideline_WO_POC_v0.1.3` folder to the repository root.
 3. In GitHub, open **Settings → Pages**.
 4. Choose **Deploy from a branch**.
 5. Select `main` and `/ (root)`.
@@ -45,13 +45,13 @@ GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 The production app can replace live multi-layer ArcGIS searching with a D1 asset index, while ArcGIS remains the source of truth for geometry and authoritative asset attributes. A scheduled synchronization job can discover newly added/updated ArcGIS assets and update the search index.
 
 
-## v0.1.2 corrective fixes
+## v0.1.3 corrective fixes
 
 This release corrects three issues found during live Web Map testing:
 
 1. **Client filtering no longer hides basemap content**
    - v0.1.1 used `webmap.allLayers`, which includes basemap/reference layers.
-   - v0.1.2 discovers FeatureLayers from `webmap.layers` (operational layers) only.
+   - v0.1.3 discovers FeatureLayers from `webmap.layers` (operational layers) only.
 
 2. **ArcGIS popup is fully removed**
    - `MapView.popupEnabled` is false.
@@ -63,3 +63,15 @@ This release corrects three issues found during live Web Map testing:
    - The original Web Map basemap is cloned and can be restored.
 
 Asset selection also now resolves hit-test layers more defensively using the result layer, graphic layer, source layer, layer id, service URL, and title.
+
+
+## v0.1.3 asset-selection fix
+
+v0.1.3 keeps all v0.1.2 fixes and changes mapped asset selection to a two-stage process:
+
+1. ArcGIS `hitTest()` is used first for fast selection.
+2. If the returned display graphic cannot be resolved to an operational FeatureLayer, the app queries a small map extent around the click against the currently visible operational asset layers.
+
+This fallback is intended to handle Web Map layers whose displayed hit-test graphic is not the same JavaScript layer object as the source FeatureLayer.
+
+The right-side panel is explicitly opened after a successful selection. ArcGIS remains read-only.

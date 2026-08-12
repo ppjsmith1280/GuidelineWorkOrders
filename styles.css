@@ -130,3 +130,9 @@ button { cursor: pointer; }
   from { opacity: .45; }
   to { opacity: 1; }
 }
+
+
+/* v0.1.3 */
+#detailPanel.open #assetDetail:not([hidden]) {
+  opacity: 1;
+}
