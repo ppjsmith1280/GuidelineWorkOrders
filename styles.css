@@ -143,6 +143,7 @@ button { cursor: pointer; }
 #detailEmpty[hidden] { display: none !important; }
 
 
-/* v0.1.5 - custom panel wins over placeholder state */
-#detailPanel.open #detailEmpty { display: none; }
-#detailPanel.open #assetDetail { display: block; }
+/* v0.1.6 - make selected asset panel state unequivocal */
+#detailPanel.open #detailEmpty { display: none !important; }
+#detailPanel.open #assetDetail { display: block !important; }
+#assetDetail:not([hidden]) { display: block !important; }
