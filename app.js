@@ -1,6 +1,6 @@
 (() => {
   const WEBMAP_ID = "5e88ffc05f0f4bbb968e852d816e09a0";
-  const STORAGE_KEY = "guideline-wo-poc-v013";
+  const STORAGE_KEY = "guideline-wo-poc-v014";
 
   const statusColors = {
     "Open": "#c9891b",
@@ -21,7 +21,8 @@
     woGraphicsLayer: null,
     selectionLayer: null,
     originalBasemap: null,
-    Basemap: null
+    Basemap: null,
+    Extent: null
   };
 
   const els = {};
@@ -314,32 +315,46 @@
     if (!state.selected) {
       els.detailEmpty.hidden = false;
       els.assetDetail.hidden = true;
+      els.detailEmpty.style.display = "";
+      els.assetDetail.style.display = "none";
       return;
     }
+
     const s = state.selected;
     console.info("Guideline selected asset:", s.layerTitle, s.assetId, s.attributes);
+
+    // Do not rely only on the HTML hidden attribute; make the state explicit.
     els.detailEmpty.hidden = true;
     els.assetDetail.hidden = false;
-    els.assetLayerTitle.textContent = s.layerTitle;
-    els.assetTitle.textContent = s.title || s.assetId;
-    els.assetIdValue.textContent = s.assetId;
+    els.detailEmpty.style.display = "none";
+    els.assetDetail.style.display = "block";
 
-    const layerFields = s.layer.fields || [];
+    els.assetLayerTitle.textContent = s.layerTitle || "ArcGIS Feature Layer";
+    els.assetTitle.textContent = s.title || s.assetId || "Selected Asset";
+    els.assetIdValue.textContent = s.assetId || "—";
+
+    const layerFields = s.layer?.fields || [];
     const fieldByName = Object.fromEntries(layerFields.map(f => [f.name, f]));
-    const rows = Object.entries(s.attributes)
+    const rows = Object.entries(s.attributes || {})
       .filter(([k,v]) => v !== null && v !== undefined && v !== "" && !/^shape/i.test(k))
-      .slice(0, 18)
+      .slice(0, 24)
       .map(([k,v]) => {
         const label = fieldByName[k]?.alias || k;
         let display = v;
         if (fieldByName[k]?.type === "date" || (typeof v === "number" && /date|time/i.test(k))) {
-          try { display = new Date(v).toLocaleString(); } catch {}
+          try {
+            const dt = new Date(v);
+            if (!Number.isNaN(dt.getTime())) display = dt.toLocaleString();
+          } catch {}
         }
         return `<div class="attr-row"><div class="attr-key">${escapeHtml(label)}</div><div class="attr-value">${escapeHtml(display)}</div></div>`;
       });
-    els.attributeTable.innerHTML = rows.join("") || `<div class="attr-row"><div class="attr-value">No readable attributes returned.</div></div>`;
+
+    els.attributeTable.innerHTML = rows.join("") ||
+      `<div class="attr-row"><div class="attr-value">No readable attributes returned.</div></div>`;
+
     renderAssetWorkOrders();
-    if (window.innerWidth <= 1050) els.detailPanel.classList.add("open");
+    els.detailPanel.classList.add("open");
   }
 
   function resolveOperationalFeatureLayer(result) {
@@ -376,7 +391,6 @@
   function layerIsSelectable(layer) {
     if (!layer || !layer.visible || !layer.loaded) return false;
 
-    // Respect scale-dependent visibility.
     const scale = state.view?.scale;
     if (scale) {
       if (layer.minScale && scale > layer.minScale) return false;
@@ -385,90 +399,88 @@
     return true;
   }
 
-  function clickToleranceExtent(event) {
-    if (!state.view || !event) return null;
-
-    // Roughly 10 screen pixels of tolerance around the click. This makes narrow
-    // lines and point symbols much easier to select than querying one exact map point.
-    const a = state.view.toMap({ x: event.x - 10, y: event.y - 10 });
-    const b = state.view.toMap({ x: event.x + 10, y: event.y + 10 });
-    if (!a || !b) return null;
-
-    const sr = a.spatialReference || b.spatialReference;
-    return {
-      type: "extent",
-      xmin: Math.min(a.x, b.x),
-      ymin: Math.min(a.y, b.y),
-      xmax: Math.max(a.x, b.x),
-      ymax: Math.max(a.y, b.y),
-      spatialReference: sr
-    };
+  function geometryAnchorPoint(geometry) {
+    if (!geometry) return null;
+    if (geometry.type === "point") return geometry;
+    if (geometry.type === "polygon" && geometry.centroid) return geometry.centroid;
+    if (geometry.extent?.center) return geometry.extent.center;
+    return null;
   }
 
-  async function queryLayerAtClick(layer, event) {
+  async function queryLayerAtMapClick(layer, event) {
     try {
       if (!layerIsSelectable(layer)) return null;
-      const geometry = clickToleranceExtent(event);
-      if (!geometry) return null;
+      if (!event?.mapPoint) return null;
+
+      // Convert ~12 screen pixels to a real map-space Extent around the click.
+      const screenA = { x: event.x - 12, y: event.y - 12 };
+      const screenB = { x: event.x + 12, y: event.y + 12 };
+      const a = state.view.toMap(screenA);
+      const b = state.view.toMap(screenB);
+      if (!a || !b) return null;
+
+      const extent = new state.Extent({
+        xmin: Math.min(a.x, b.x),
+        ymin: Math.min(a.y, b.y),
+        xmax: Math.max(a.x, b.x),
+        ymax: Math.max(a.y, b.y),
+        spatialReference: event.mapPoint.spatialReference
+      });
 
       const result = await layer.queryFeatures({
-        geometry,
+        geometry: extent,
         spatialRelationship: "intersects",
         where: "1=1",
         outFields: ["*"],
         returnGeometry: true,
-        num: 3
+        num: 5
       });
 
       if (!result?.features?.length) return null;
 
-      // If more than one feature intersects the tolerance box, prefer the one
-      // whose geometry is closest to the actual click in screen space.
-      const candidates = result.features.map(graphic => {
+      const ranked = result.features.map(graphic => {
         let distance = Number.POSITIVE_INFINITY;
         try {
-          const g = graphic.geometry;
-          let mapPoint = null;
-
-          if (g?.type === "point") {
-            mapPoint = g;
-          } else if (g?.type === "polygon" && g.centroid) {
-            mapPoint = g.centroid;
-          } else if (g?.extent?.center) {
-            mapPoint = g.extent.center;
-          }
-
-          if (mapPoint) {
-            const p = state.view.toScreen(mapPoint);
+          const anchor = geometryAnchorPoint(graphic.geometry);
+          if (anchor) {
+            const p = state.view.toScreen(anchor);
             if (p) distance = Math.hypot(p.x - event.x, p.y - event.y);
           }
         } catch {}
-
         return { graphic, distance };
       }).sort((a, b) => a.distance - b.distance);
 
-      return { layer, graphic: candidates[0].graphic };
+      return {
+        layer,
+        graphic: ranked[0].graphic,
+        distance: ranked[0].distance
+      };
     } catch (err) {
-      console.debug("Click query skipped layer", layer.title, err);
+      console.debug("Map-click query skipped layer", layer?.title, err);
       return null;
     }
   }
 
-  async function spatialFallbackSelection(event) {
+  async function selectAssetFromMapClick(event) {
     const layers = state.featureLayers.filter(layerIsSelectable);
     if (!layers.length) return null;
 
-    // Run visible layer queries concurrently. We only do this when hitTest could
-    // not resolve an operational feature, so normal clicks remain fast.
+    // Directly query all visible operational FeatureLayers. This is deliberately
+    // independent of ArcGIS popup and hitTest behavior.
     const matches = (await Promise.all(
-      layers.map(layer => queryLayerAtClick(layer, event))
+      layers.map(layer => queryLayerAtMapClick(layer, event))
     )).filter(Boolean);
 
     if (!matches.length) return null;
 
-    // Prefer the top-most operational layer in the web map where possible.
-    const rank = new Map(state.featureLayers.map((layer, i) => [layer, i]));
-    matches.sort((a, b) => (rank.get(b.layer) ?? 0) - (rank.get(a.layer) ?? 0));
+    // Prefer the feature spatially closest to the click. If equal, prefer the
+    // later/top-most operational layer.
+    const order = new Map(state.featureLayers.map((layer, i) => [layer, i]));
+    matches.sort((a, b) => {
+      if (Math.abs(a.distance - b.distance) > 0.25) return a.distance - b.distance;
+      return (order.get(b.layer) ?? 0) - (order.get(a.layer) ?? 0);
+    });
+
     return matches[0];
   }
 
@@ -481,47 +493,27 @@
         state.view.popup = null;
       }
 
-      let selection = null;
-
-      // FAST PATH: use the graphic returned directly by ArcGIS hit testing.
-      const hit = await state.view.hitTest(event);
-      for (const result of hit.results) {
-        const graphic = result?.graphic;
-        if (!graphic?.attributes || !Object.keys(graphic.attributes).length) continue;
-
-        const layer = resolveOperationalFeatureLayer(result);
-        if (!layerIsSelectable(layer)) continue;
-
-        selection = { layer, graphic };
-        break;
-      }
-
-      // RELIABLE FALLBACK: some Web Map layers return display graphics whose
-      // layer identity does not map cleanly back to the operational FeatureLayer.
-      // Query a small box around the click against visible operational layers.
-      if (!selection) {
-        selection = await spatialFallbackSelection(event);
-      }
+      const selection = await selectAssetFromMapClick(event);
 
       if (!selection) {
         clearSelection();
         return;
       }
 
-      const { layer, graphic } = selection;
-      if (!layer.loaded) {
-        try { await layer.load(); } catch {}
-      }
+      state.selected = makeAssetSelection(selection.layer, selection.graphic);
 
-      state.selected = makeAssetSelection(layer, graphic);
+      // Render before highlighting so a GraphicsLayer symbol issue can never
+      // prevent the information panel from updating.
       renderSelectedAsset();
-      renderSelectionGraphic();
 
-      // Desktop panel is always visible, but "open" also gives consistent state
-      // with the responsive layout and makes selection explicit.
-      els.detailPanel.classList.add("open");
+      try {
+        renderSelectionGraphic();
+      } catch (highlightError) {
+        console.debug("Selection highlight skipped", highlightError);
+      }
     } catch (err) {
-      console.warn("Asset selection failed", err);
+      console.error("Guideline asset selection failed", err);
+      clearSelection();
     }
   }
 
@@ -680,7 +672,7 @@
         const r = results[Number(btn.dataset.resultIndex)];
         state.selected = r.selection || makeAssetSelection(r.layer, r.graphic);
         renderSelectedAsset();
-        renderSelectionGraphic();
+        try { renderSelectionGraphic(); } catch {}
         els.detailPanel.classList.add("open");
         try { await state.view.goTo(r.graphic.geometry, { zoom: 18, duration: 700 }); } catch {}
         if (window.innerWidth <= 760) els.sidebar.classList.remove("open");
@@ -732,12 +724,14 @@
       "esri/widgets/Expand",
       "esri/widgets/Legend",
       "esri/layers/GraphicsLayer",
-      "esri/Basemap"
-    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap) => {
+      "esri/Basemap",
+      "esri/geometry/Extent"
+    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap, Extent) => {
       try {
         const webmap = new WebMap({ portalItem: { id: WEBMAP_ID } });
         state.webmap = webmap;
         state.Basemap = Basemap;
+        state.Extent = Extent;
         state.woGraphicsLayer = new GraphicsLayer({ title: "Demo Work Orders", listMode: "hide" });
         state.selectionLayer = new GraphicsLayer({ title: "Selected Asset", listMode: "hide" });
         webmap.addMany([state.woGraphicsLayer, state.selectionLayer]);

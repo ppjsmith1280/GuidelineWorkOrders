@@ -136,3 +136,8 @@ button { cursor: pointer; }
 #detailPanel.open #assetDetail:not([hidden]) {
   opacity: 1;
 }
+
+
+/* v0.1.4 explicit side-panel states */
+#assetDetail[hidden] { display: none !important; }
+#detailEmpty[hidden] { display: none !important; }
