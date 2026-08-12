@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Guideline Asset Management POC</title>
+  <meta name="description" content="Proof-of-concept work order app using the existing public ArcGIS Web Map." />
+  <link rel="stylesheet" href="https://js.arcgis.com/4.33/esri/themes/light/main.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://js.arcgis.com/4.33/"></script>
+</head>
+<body>
+  <div id="appShell">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <div class="brand-mark">G</div>
+        <div>
+          <div class="brand-title">Guideline Asset Management</div>
+          <div class="brand-subtitle">Work Order Proof of Concept</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="demo-badge">DEMO v0.1</span>
+        <button id="resetDemoBtn" class="ghost-btn" type="button">Reset demo data</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar">
+        <section class="panel-section compact">
+          <label class="field-label" for="districtSelect">District / Client</label>
+          <select id="districtSelect" class="control">
+            <option value="all">All current clients</option>
+            <option value="HCMUD71">HCMUD 71</option>
+            <option value="FBLID2">FBLID 2</option>
+          </select>
+        </section>
+
+        <section class="panel-section compact">
+          <label class="field-label" for="assetSearch">Search asset</label>
+          <div class="search-row">
+            <input id="assetSearch" class="control" type="search" placeholder="Asset ID, layer, keyword" autocomplete="off" />
+            <button id="assetSearchBtn" class="primary-btn small" type="button">Search</button>
+          </div>
+          <div id="searchStatus" class="helper" aria-live="polite">Searches visible feature layers.</div>
+          <div id="searchResults" class="search-results" hidden></div>
+        </section>
+
+        <section class="panel-section compact">
+          <div class="section-heading-row">
+            <div class="section-heading">Work Orders</div>
+            <span id="woCountBadge" class="count-badge">0</span>
+          </div>
+          <div class="filter-grid" id="woFilters">
+            <button class="filter-chip active" type="button" data-status="all">All</button>
+            <button class="filter-chip" type="button" data-status="Open">Open</button>
+            <button class="filter-chip" type="button" data-status="In Progress">In Progress</button>
+            <button class="filter-chip" type="button" data-status="Overdue">Overdue</button>
+            <button class="filter-chip" type="button" data-status="Complete">Complete</button>
+          </div>
+          <div id="workOrderList" class="wo-list"></div>
+        </section>
+
+        <section class="panel-section layer-section">
+          <div class="section-heading-row">
+            <div class="section-heading">ArcGIS Layers</div>
+            <button id="toggleLayerPanelBtn" class="text-btn" type="button">Hide</button>
+          </div>
+          <div id="layerList"></div>
+        </section>
+      </aside>
+
+      <main class="map-area">
+        <div id="viewDiv"></div>
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="spinner"></div>
+          <div class="loading-title">Loading your ArcGIS Web Map</div>
+          <div class="loading-copy">Using Web Map 5e88ffc05f0f4bbb968e852d816e09a0</div>
+        </div>
+        <button id="mobileSidebarBtn" class="mobile-sidebar-btn" type="button">☰</button>
+      </main>
+
+      <aside class="detail-panel" id="detailPanel">
+        <div class="detail-empty" id="detailEmpty">
+          <div class="detail-empty-icon">⌖</div>
+          <h2>Select an asset</h2>
+          <p>Click a mapped asset to see its ArcGIS attributes and create a demo work order.</p>
+        </div>
+
+        <div id="assetDetail" hidden>
+          <div class="asset-kicker" id="assetLayerTitle">Asset</div>
+          <h2 id="assetTitle">Selected Asset</h2>
+          <div class="asset-id-row">
+            <span class="asset-id-label">Asset ID</span>
+            <span class="asset-id-value" id="assetIdValue">—</span>
+          </div>
+
+          <div class="detail-section">
+            <div class="detail-section-title">ArcGIS Attributes</div>
+            <div id="attributeTable" class="attribute-table"></div>
+          </div>
+
+          <div class="detail-section">
+            <div class="section-heading-row">
+              <div class="detail-section-title">Work Orders</div>
+              <button id="createWoBtn" class="primary-btn small" type="button">Create Demo WO</button>
+            </div>
+            <div id="assetWorkOrders" class="asset-wo-list"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <dialog id="woDialog" class="wo-dialog">
+    <form method="dialog" id="woForm" class="wo-form">
+      <div class="dialog-header">
+        <div>
+          <div class="asset-kicker">Demo Work Order</div>
+          <h2>Create Work Order</h2>
+        </div>
+        <button class="icon-btn" value="cancel" aria-label="Close" type="submit">×</button>
+      </div>
+
+      <div class="dialog-asset" id="dialogAssetLabel">Selected asset</div>
+
+      <label class="field-label" for="woType">Work type</label>
+      <select id="woType" class="control" required>
+        <option>Repair</option>
+        <option>Inspection</option>
+        <option>Preventive Maintenance</option>
+        <option>Replacement</option>
+        <option>Cleanup</option>
+      </select>
+
+      <label class="field-label" for="woDescription">Description</label>
+      <textarea id="woDescription" class="control textarea" rows="3" required placeholder="Describe the issue or requested work"></textarea>
+
+      <div class="two-col">
+        <div>
+          <label class="field-label" for="woPriority">Priority</label>
+          <select id="woPriority" class="control">
+            <option>Low</option>
+            <option selected>Normal</option>
+            <option>High</option>
+            <option>Emergency</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="woStatus">Status</label>
+          <select id="woStatus" class="control">
+            <option selected>Open</option>
+            <option>In Progress</option>
+            <option>Overdue</option>
+            <option>Complete</option>
+          </select>
+        </div>
+      </div>
+
+      <label class="field-label" for="woAssigned">Assigned to</label>
+      <input id="woAssigned" class="control" type="text" placeholder="Demo Contractor / Staff" />
+
+      <div class="dialog-actions">
+        <button class="ghost-btn" value="cancel" type="submit">Cancel</button>
+        <button id="saveWoBtn" class="primary-btn" value="default" type="button">Create Work Order</button>
+      </div>
+      <div class="helper">Demo only. Saves to this browser and never writes to ArcGIS.</div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
