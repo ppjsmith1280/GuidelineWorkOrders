@@ -1,6 +1,6 @@
 (() => {
   const WEBMAP_ID = "5e88ffc05f0f4bbb968e852d816e09a0";
-  const STORAGE_KEY = "guideline-wo-poc-v01";
+  const STORAGE_KEY = "guideline-wo-poc-v012";
 
   const statusColors = {
     "Open": "#c9891b",
@@ -201,10 +201,10 @@
   function applyDistrictFilter() {
     const val = els.districtSelect.value;
 
-    // IMPORTANT: filter operational FeatureLayers only.
-    // Never touch webmap.basemap.baseLayers/referenceLayers.
+    // state.featureLayers now contains ONLY operational asset FeatureLayers.
     state.featureLayers.forEach(layer => {
       if (!layer) return;
+
       if (layer.__guidelineOriginalVisible === undefined) {
         layer.__guidelineOriginalVisible = layer.visible;
       }
@@ -216,26 +216,37 @@
       }
     });
 
-    // Clear a selected asset if its layer is now filtered out.
+    // Basemap is deliberately untouched.
     if (state.selected && !state.selected.layer.visible) {
       clearSelection();
     }
   }
 
-  function changeBasemap() {
-    if (!state.webmap || !state.Basemap) return;
+  async function changeBasemap() {
+    if (!state.webmap) return;
     const id = els.basemapSelect.value;
+
     try {
       if (id === "webmap") {
-        state.webmap.basemap = state.originalBasemap;
+        // Restore a clone so the exact Web Map default is restored reliably.
+        state.webmap.basemap = state.originalBasemap?.clone
+          ? state.originalBasemap.clone()
+          : state.originalBasemap;
       } else {
-        const basemap = state.Basemap.fromId(id);
-        if (basemap) state.webmap.basemap = basemap;
+        // ArcGIS Map/WebMap supports assigning a well-known basemap ID directly.
+        state.webmap.basemap = id;
+      }
+
+      // Wait for the replacement basemap to become ready before declaring success.
+      if (state.webmap.basemap?.load) {
+        try { await state.webmap.basemap.load(); } catch {}
       }
     } catch (err) {
       console.warn("Basemap change failed", err);
       els.basemapSelect.value = "webmap";
-      state.webmap.basemap = state.originalBasemap;
+      state.webmap.basemap = state.originalBasemap?.clone
+        ? state.originalBasemap.clone()
+        : state.originalBasemap;
     }
   }
 
@@ -330,26 +341,69 @@
     if (window.innerWidth <= 1050) els.detailPanel.classList.add("open");
   }
 
+  function resolveOperationalFeatureLayer(result) {
+    const graphic = result?.graphic;
+    const candidates = [
+      result?.layer,
+      graphic?.layer,
+      graphic?.sourceLayer
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      const direct = state.featureLayers.find(layer => layer === candidate);
+      if (direct) return direct;
+
+      const byId = state.featureLayers.find(layer =>
+        candidate.id && layer.id === candidate.id
+      );
+      if (byId) return byId;
+
+      const byUrl = state.featureLayers.find(layer =>
+        candidate.url && layer.url === candidate.url
+      );
+      if (byUrl) return byUrl;
+
+      const byTitle = state.featureLayers.find(layer =>
+        candidate.title && layer.title === candidate.title
+      );
+      if (byTitle) return byTitle;
+    }
+
+    return null;
+  }
+
   async function onMapClick(event) {
     try {
-      // Hit-test the map ourselves. ArcGIS's stock popup is disabled in v0.1.1.
+      // Stop any click behavior inherited from the Web Map.
+      if (event?.stopPropagation) event.stopPropagation();
+
+      // Extra safeguard: there should never be an ArcGIS popup in this app.
+      if (state.view) {
+        state.view.popupEnabled = false;
+        state.view.popup = null;
+      }
+
       const hit = await state.view.hitTest(event);
 
-      const result = hit.results.find(r => {
-        const graphic = r.graphic;
-        const layer = r.layer || graphic?.layer;
-        if (!graphic || !layer) return false;
-        if (layer === state.woGraphicsLayer || layer === state.selectionLayer) return false;
-        if (layer.type !== "feature") return false;
-        return graphic.attributes && Object.keys(graphic.attributes).length > 0;
-      });
+      let chosen = null;
+      for (const result of hit.results) {
+        const graphic = result?.graphic;
+        if (!graphic?.attributes || !Object.keys(graphic.attributes).length) continue;
 
-      if (!result) {
+        const layer = resolveOperationalFeatureLayer(result);
+        if (!layer) continue;
+        if (!layer.visible) continue;
+
+        chosen = { result, layer };
+        break;
+      }
+
+      if (!chosen) {
         clearSelection();
         return;
       }
 
-      const layer = result.layer || result.graphic.layer;
+      const { result, layer } = chosen;
       if (!layer.loaded) {
         try { await layer.load(); } catch {}
       }
@@ -358,7 +412,7 @@
       renderSelectedAsset();
       renderSelectionGraphic();
     } catch (err) {
-      console.warn("Hit test failed", err);
+      console.warn("Asset selection failed", err);
     }
   }
 
@@ -524,16 +578,39 @@
     });
   }
 
+  function collectOperationalFeatureLayers(collection, out = []) {
+    if (!collection) return out;
+
+    collection.forEach(layer => {
+      if (!layer) return;
+
+      if (layer.type === "group" && layer.layers) {
+        collectOperationalFeatureLayers(layer.layers, out);
+        return;
+      }
+
+      if (layer.type === "feature") {
+        out.push(layer);
+      }
+    });
+
+    return out;
+  }
+
   async function discoverFeatureLayers() {
-    const all = state.webmap.allLayers?.toArray?.() || [];
-    const layers = all.filter(l => l.type === "feature");
+    // IMPORTANT: webmap.layers = operational layers only.
+    // Do NOT use webmap.allLayers because ArcGIS includes basemap/reference layers there.
+    const layers = collectOperationalFeatureLayers(state.webmap.layers);
     await Promise.allSettled(layers.map(l => l.load()));
     state.featureLayers = layers.filter(l => l.loaded);
   }
 
   function seedLayerOriginalVisibility() {
-    const all = state.webmap.allLayers?.toArray?.() || [];
-    all.forEach(l => { if (l && l.__guidelineOriginalVisible === undefined) l.__guidelineOriginalVisible = l.visible; });
+    state.featureLayers.forEach(layer => {
+      if (layer && layer.__guidelineOriginalVisible === undefined) {
+        layer.__guidelineOriginalVisible = layer.visible;
+      }
+    });
   }
 
   function initArcGis() {
@@ -558,16 +635,30 @@
         const view = new MapView({
           container: "viewDiv",
           map: webmap,
+          popup: null,
           popupEnabled: false,
           highlightOptions: { color: "#00a6d6", haloOpacity: .8, fillOpacity: .15 }
         });
         state.view = view;
 
         await view.when();
-        state.originalBasemap = webmap.basemap;
+
+        // Definitively remove the ArcGIS popup experience.
+        // popupEnabled=false stops click-to-popup; popup=null prevents a Popup from existing.
+        view.popupEnabled = false;
+        view.popup = null;
+
+        // Clone the original basemap so it can be restored after testing alternatives.
+        state.originalBasemap = webmap.basemap?.clone
+          ? webmap.basemap.clone()
+          : webmap.basemap;
+
         await discoverFeatureLayers();
-        state.featureLayers.forEach(layer => { layer.popupEnabled = false; });
+        state.featureLayers.forEach(layer => {
+          layer.popupEnabled = false;
+        });
         seedLayerOriginalVisibility();
+        console.info(`Guideline POC: ${state.featureLayers.length} operational FeatureLayers indexed for selection/search.`);
 
         const layerList = new LayerList({ view, container: "layerList" });
         state.layerList = layerList;
@@ -579,9 +670,9 @@
         view.on("pointer-move", async evt => {
           try {
             const hit = await view.hitTest(evt);
-            view.container.style.cursor = hit.results.some(r => {
-              const layer = r.layer || r.graphic?.layer;
-              return layer?.type === "feature" && layer !== state.woGraphicsLayer && layer !== state.selectionLayer;
+            view.container.style.cursor = hit.results.some(result => {
+              const layer = resolveOperationalFeatureLayer(result);
+              return !!layer && layer.visible;
             }) ? "pointer" : "default";
           } catch {}
         });

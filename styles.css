@@ -120,3 +120,13 @@ button { cursor: pointer; }
 /* v0.1.1 */
 #basemapSelect { margin-bottom: 2px; }
 .asset-detail-active { border-left-color: #9fc7dc; }
+
+
+/* v0.1.2 selection feedback */
+#assetDetail:not([hidden]) {
+  animation: guideline-panel-in 120ms ease-out;
+}
+@keyframes guideline-panel-in {
+  from { opacity: .45; }
+  to { opacity: 1; }
+}
