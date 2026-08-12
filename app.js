@@ -1,6 +1,6 @@
 (() => {
   const WEBMAP_ID = "5e88ffc05f0f4bbb968e852d816e09a0";
-  const STORAGE_KEY = "guideline-wo-poc-v016";
+  const STORAGE_KEY = "guideline-wo-poc-v017";
 
   const statusColors = {
     "Open": "#c9891b",
@@ -22,7 +22,17 @@
     selectionLayer: null,
     originalBasemap: null,
     Basemap: null,
-    Extent: null
+    Extent: null,
+    symbolUtils: null,
+    layerUserVisibility: new Map(),
+    clientMasterVisibility: new Map(),
+    categoryHidden: new Map(),
+    categoryEntries: new Map(),
+    woClientVisibility: new Map(),
+    woStatusVisibility: new Map(),
+    expandedClients: new Set(["HCMUD71", "FBLID2"]),
+    expandedLayers: new Set(),
+    expandedWoClients: new Set()
   };
 
   const els = {};
@@ -104,7 +114,7 @@
               ${statusPill(w.status)}
             </div>
             <div class="wo-desc">${escapeHtml(w.description)}</div>
-            <div class="wo-meta">${escapeHtml(w.layerTitle)} · ${escapeHtml(w.assetId)}</div>
+            <div class="wo-meta">${escapeHtml(clientDisplayName(w.client || "OTHER"))} · ${escapeHtml(w.layerTitle)} · ${escapeHtml(w.assetId)}</div>
           </div>`).join("");
       els.workOrderList.querySelectorAll(".wo-card").forEach(card => {
         card.addEventListener("click", () => focusWorkOrder(card.dataset.woId));
@@ -161,6 +171,7 @@
       layerTitle: state.selected.layerTitle,
       layerId: state.selected.layerId,
       objectId: state.selected.objectId,
+      client: clientKeyForLayer(state.selected.layer),
       type: els.woType.value,
       description,
       priority: els.woPriority.value,
@@ -175,6 +186,7 @@
     els.woDialog.close();
     renderWorkOrders();
     renderWorkOrderGraphics();
+    renderCustomLayerTree();
   }
 
   function resetDemoData() {
@@ -183,6 +195,7 @@
     saveWorkOrders();
     renderWorkOrders();
     renderWorkOrderGraphics();
+    renderCustomLayerTree();
   }
 
   function toggleLayerPanel() {
@@ -199,28 +212,444 @@
     return true;
   }
 
-  function applyDistrictFilter() {
-    const val = els.districtSelect.value;
 
-    // state.featureLayers now contains ONLY operational asset FeatureLayers.
+  function clientKeyForLayer(layer) {
+    const title = String(layer?.title || "").toUpperCase().replaceAll(" ", "").replaceAll("_", "").replaceAll("-", "");
+    if (title.includes("HCMUD71") || title.includes("HCMUD071")) return "HCMUD71";
+    if (title.includes("FBLID2") || title.includes("FBLID02")) return "FBLID2";
+    return "OTHER";
+  }
+
+  function clientDisplayName(client) {
+    if (client === "HCMUD71") return "HCMUD 71";
+    if (client === "FBLID2") return "FBLID 2";
+    return "Other";
+  }
+
+  function cleanLayerTitle(layer, client) {
+    let title = String(layer?.title || "Asset Layer");
+    if (client === "HCMUD71") title = title.replace(/^HCMUD\s*0?71[\s_-]*/i, "");
+    if (client === "FBLID2") title = title.replace(/^FBLID\s*0?2[\s_-]*/i, "");
+    return title || layer?.title || "Asset Layer";
+  }
+
+  function selectedClientAllows(client) {
+    const selected = els.districtSelect?.value || "all";
+    return selected === "all" || selected === client;
+  }
+
+  function effectiveLayerVisible(layer) {
+    const client = clientKeyForLayer(layer);
+    const userVisible = state.layerUserVisibility.get(layer.id) ?? layer.__guidelineOriginalVisible ?? true;
+    const clientMaster = state.clientMasterVisibility.get(client) ?? true;
+    return !!(selectedClientAllows(client) && clientMaster && userVisible);
+  }
+
+  function applyOperationalVisibility() {
     state.featureLayers.forEach(layer => {
-      if (!layer) return;
+      layer.visible = effectiveLayerVisible(layer);
+    });
+  }
 
-      if (layer.__guidelineOriginalVisible === undefined) {
-        layer.__guidelineOriginalVisible = layer.visible;
+  function eyeSvg(visible) {
+    return visible
+      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/></svg>`
+      : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 6.1A10.5 10.5 0 0 1 12 6c6.1 0 9.5 6 9.5 6a17 17 0 0 1-2.5 3.2M6.2 7.3C3.8 9.2 2.5 12 2.5 12s3.4 6 9.5 6c1.4 0 2.7-.3 3.8-.7M9.9 9.9A3 3 0 0 0 14.1 14.1"/></svg>`;
+  }
+
+  function arrowSvg(expanded) {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${expanded ? "expanded" : ""}"><path d="m8 10 4 4 4-4"/></svg>`;
+  }
+
+  function sqlLiteral(layer, fieldName, raw) {
+    if (raw === null || raw === undefined) return "NULL";
+    const field = (layer.fields || []).find(f => f.name === fieldName);
+    const type = String(field?.type || "").toLowerCase();
+    if (type.includes("integer") || type.includes("double") || type.includes("single") || type.includes("small")) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? String(n) : "NULL";
+    }
+    return `'${String(raw).replaceAll("'", "''")}'`;
+  }
+
+  function uniqueValueClause(layer, renderer, info) {
+    const fields = [renderer.field, renderer.field2, renderer.field3].filter(Boolean);
+    if (!fields.length) return null;
+
+    const delimiter = renderer.fieldDelimiter || ", ";
+    const rawValue = info.value;
+    const values = fields.length === 1
+      ? [rawValue]
+      : String(rawValue).split(delimiter);
+
+    if (values.length < fields.length) return null;
+
+    return fields.map((field, i) => {
+      const raw = values[i];
+      if (raw === null || raw === undefined || String(raw).toLowerCase() === "<null>") {
+        return `${field} IS NULL`;
       }
+      return `${field} = ${sqlLiteral(layer, field, raw)}`;
+    }).join(" AND ");
+  }
 
-      if (val === "all") {
-        layer.visible = layer.__guidelineOriginalVisible;
-      } else {
-        layer.visible = layerMatchesClient(layer, val);
+  function getRendererEntries(layer) {
+    const renderer = layer?.renderer;
+    if (!renderer) return [];
+
+    if (renderer.type === "simple" && renderer.symbol) {
+      return [{
+        key: "simple",
+        label: cleanLayerTitle(layer, clientKeyForLayer(layer)),
+        symbol: renderer.symbol,
+        clause: null
+      }];
+    }
+
+    if (renderer.type === "unique-value") {
+      return (renderer.uniqueValueInfos || []).map((info, i) => ({
+        key: `uv:${i}:${String(info.value)}`,
+        label: info.label || safeText(info.value),
+        symbol: info.symbol,
+        clause: uniqueValueClause(layer, renderer, info)
+      }));
+    }
+
+    if (renderer.type === "class-breaks") {
+      const field = renderer.field;
+      return (renderer.classBreakInfos || []).map((info, i) => {
+        const min = Number(info.minValue);
+        const max = Number(info.maxValue);
+        let clause = null;
+        if (field && Number.isFinite(max)) {
+          clause = Number.isFinite(min)
+            ? `(${field} > ${min} AND ${field} <= ${max})`
+            : `${field} <= ${max}`;
+        }
+        return {
+          key: `cb:${i}:${min}:${max}`,
+          label: info.label || `${safeText(info.minValue)} – ${safeText(info.maxValue)}`,
+          symbol: info.symbol,
+          clause
+        };
+      });
+    }
+
+    return [];
+  }
+
+  function getCachedRendererEntries(layer) {
+    if (!state.categoryEntries.has(layer.id)) {
+      state.categoryEntries.set(layer.id, getRendererEntries(layer));
+    }
+    return state.categoryEntries.get(layer.id) || [];
+  }
+
+  async function renderSymbolPreview(node, symbol, geometryType) {
+    if (!node) return;
+    node.innerHTML = "";
+    if (symbol && state.symbolUtils) {
+      try {
+        await state.symbolUtils.renderPreviewHTML(symbol.clone ? symbol.clone() : symbol, {
+          node,
+          size: 16,
+          symbolConfig: { isSquareFill: true }
+        });
+        if (node.childNodes.length) return;
+      } catch (err) {
+        console.debug("Symbol preview fallback", err);
+      }
+    }
+
+    const fallback = document.createElement("span");
+    fallback.className = `symbol-fallback symbol-${geometryType || "point"}`;
+    node.appendChild(fallback);
+  }
+
+  function createEyeButton(visible, label, onClick, disabled = false) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `layer-eye ${visible ? "is-visible" : "is-hidden"}`;
+    btn.innerHTML = eyeSvg(visible);
+    btn.setAttribute("aria-label", `${visible ? "Hide" : "Show"} ${label}`);
+    btn.title = `${visible ? "Hide" : "Show"} ${label}`;
+    btn.disabled = disabled;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function createArrowButton(expanded, label, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "layer-arrow";
+    btn.innerHTML = arrowSvg(expanded);
+    btn.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${label}`);
+    btn.title = `${expanded ? "Collapse" : "Expand"} ${label}`;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  async function applyCategoryVisibility(layer) {
+    const entries = getCachedRendererEntries(layer);
+    const hidden = state.categoryHidden.get(layer.id) || new Set();
+    const hiddenClauses = entries
+      .filter(entry => hidden.has(entry.key) && entry.clause)
+      .map(entry => `(${entry.clause})`);
+
+    const where = hiddenClauses.length ? `NOT (${hiddenClauses.join(" OR ")})` : null;
+    layer.__guidelineCategoryWhere = where;
+
+    try {
+      const layerView = await state.view.whenLayerView(layer);
+      layerView.filter = where ? { where } : null;
+    } catch (err) {
+      console.warn("Could not apply category visibility", layer.title, err);
+    }
+  }
+
+  function workOrderClientVisible(client) {
+    return state.woClientVisibility.get(client) ?? true;
+  }
+
+  function workOrderStatusVisible(client, status) {
+    const map = state.woStatusVisibility.get(client);
+    return map ? (map.get(status) ?? true) : true;
+  }
+
+  function initializeCustomLayerState() {
+    state.featureLayers.forEach(layer => {
+      const client = clientKeyForLayer(layer);
+      state.layerUserVisibility.set(layer.id, layer.__guidelineOriginalVisible ?? layer.visible);
+      if (!state.clientMasterVisibility.has(client)) state.clientMasterVisibility.set(client, true);
+      if (!state.woClientVisibility.has(client)) state.woClientVisibility.set(client, true);
+      if (!state.woStatusVisibility.has(client)) {
+        state.woStatusVisibility.set(client, new Map(
+          Object.keys(statusColors).map(status => [status, true])
+        ));
       }
     });
 
-    // Basemap is deliberately untouched.
-    if (state.selected && !state.selected.layer.visible) {
-      clearSelection();
+    ["HCMUD71", "FBLID2"].forEach(client => {
+      if (!state.clientMasterVisibility.has(client)) state.clientMasterVisibility.set(client, true);
+      if (!state.woClientVisibility.has(client)) state.woClientVisibility.set(client, true);
+      if (!state.woStatusVisibility.has(client)) {
+        state.woStatusVisibility.set(client, new Map(
+          Object.keys(statusColors).map(status => [status, true])
+        ));
+      }
+    });
+  }
+
+  async function renderCustomLayerTree() {
+    if (!els.layerList) return;
+    els.layerList.innerHTML = "";
+
+    const selectedClient = els.districtSelect.value;
+    const groups = new Map();
+
+    state.featureLayers.forEach(layer => {
+      const client = clientKeyForLayer(layer);
+      if (client === "OTHER") return;
+      if (selectedClient !== "all" && selectedClient !== client) return;
+      if (!groups.has(client)) groups.set(client, []);
+      groups.get(client).push(layer);
+    });
+
+    const orderedClients = ["HCMUD71", "FBLID2"].filter(client =>
+      groups.has(client) || selectedClient === client
+    );
+
+    const previewJobs = [];
+
+    for (const client of orderedClients) {
+      const clientWrap = document.createElement("div");
+      clientWrap.className = "client-layer-group";
+
+      const header = document.createElement("div");
+      header.className = "layer-row client-layer-row";
+
+      const clientVisible = state.clientMasterVisibility.get(client) ?? true;
+      const clientExpanded = state.expandedClients.has(client);
+
+      header.appendChild(createEyeButton(clientVisible, clientDisplayName(client), () => {
+        state.clientMasterVisibility.set(client, !clientVisible);
+        applyOperationalVisibility();
+        renderWorkOrderGraphics();
+        renderCustomLayerTree();
+      }));
+
+      header.appendChild(createArrowButton(clientExpanded, clientDisplayName(client), () => {
+        if (clientExpanded) state.expandedClients.delete(client);
+        else state.expandedClients.add(client);
+        renderCustomLayerTree();
+      }));
+
+      const headerLabel = document.createElement("div");
+      headerLabel.className = "layer-label client-label";
+      headerLabel.textContent = clientDisplayName(client);
+      header.appendChild(headerLabel);
+
+      clientWrap.appendChild(header);
+
+      const children = document.createElement("div");
+      children.className = "client-layer-children";
+      children.hidden = !clientExpanded;
+
+      for (const layer of (groups.get(client) || [])) {
+        const entries = getCachedRendererEntries(layer);
+        const multi = entries.length > 1;
+        const row = document.createElement("div");
+        row.className = "layer-row asset-layer-row";
+
+        const userVisible = state.layerUserVisibility.get(layer.id) ?? true;
+        const effectiveVisible = effectiveLayerVisible(layer);
+
+        row.appendChild(createEyeButton(effectiveVisible, layer.title, () => {
+          state.layerUserVisibility.set(layer.id, !userVisible);
+          applyOperationalVisibility();
+          renderCustomLayerTree();
+        }));
+
+        if (multi) {
+          const expanded = state.expandedLayers.has(layer.id);
+          row.appendChild(createArrowButton(expanded, layer.title, () => {
+            if (expanded) state.expandedLayers.delete(layer.id);
+            else state.expandedLayers.add(layer.id);
+            renderCustomLayerTree();
+          }));
+        } else {
+          const symbolCell = document.createElement("div");
+          symbolCell.className = "layer-symbol";
+          row.appendChild(symbolCell);
+          if (entries[0]?.symbol) {
+            previewJobs.push(renderSymbolPreview(symbolCell, entries[0].symbol, layer.geometryType));
+          } else {
+            previewJobs.push(renderSymbolPreview(symbolCell, null, layer.geometryType));
+          }
+        }
+
+        const label = document.createElement("div");
+        label.className = "layer-label";
+        label.textContent = cleanLayerTitle(layer, client);
+        label.title = layer.title;
+        row.appendChild(label);
+        children.appendChild(row);
+
+        if (multi) {
+          const sub = document.createElement("div");
+          sub.className = "symbol-category-list";
+          sub.hidden = !state.expandedLayers.has(layer.id);
+
+          const hidden = state.categoryHidden.get(layer.id) || new Set();
+
+          for (const entry of entries) {
+            const child = document.createElement("div");
+            child.className = "layer-row symbol-category-row";
+            const canToggle = !!entry.clause;
+            const visible = !hidden.has(entry.key);
+
+            child.appendChild(createEyeButton(visible, `${layer.title}: ${entry.label}`, async () => {
+              if (!canToggle) return;
+              const next = new Set(state.categoryHidden.get(layer.id) || []);
+              if (next.has(entry.key)) next.delete(entry.key);
+              else next.add(entry.key);
+              state.categoryHidden.set(layer.id, next);
+              await applyCategoryVisibility(layer);
+              renderCustomLayerTree();
+            }, !canToggle));
+
+            const symbolCell = document.createElement("div");
+            symbolCell.className = "layer-symbol";
+            child.appendChild(symbolCell);
+            previewJobs.push(renderSymbolPreview(symbolCell, entry.symbol, layer.geometryType));
+
+            const childLabel = document.createElement("div");
+            childLabel.className = "layer-label category-label";
+            childLabel.textContent = entry.label;
+            if (!canToggle) childLabel.title = "This renderer category can be displayed but cannot be independently filtered in this POC.";
+            child.appendChild(childLabel);
+
+            sub.appendChild(child);
+          }
+
+          children.appendChild(sub);
+        }
+      }
+
+      // Client work-order pseudo layer. It uses the same nested behavior as a
+      // multi-symbol ArcGIS layer, with each WO status as a child symbol.
+      const woRow = document.createElement("div");
+      woRow.className = "layer-row asset-layer-row wo-layer-row";
+
+      const woVisible = workOrderClientVisible(client);
+      woRow.appendChild(createEyeButton(woVisible, `${clientDisplayName(client)} Work Orders`, () => {
+        state.woClientVisibility.set(client, !woVisible);
+        renderWorkOrderGraphics();
+        renderCustomLayerTree();
+      }));
+
+      const woExpanded = state.expandedWoClients.has(client);
+      woRow.appendChild(createArrowButton(woExpanded, `${clientDisplayName(client)} Work Orders`, () => {
+        if (woExpanded) state.expandedWoClients.delete(client);
+        else state.expandedWoClients.add(client);
+        renderCustomLayerTree();
+      }));
+
+      const woLabel = document.createElement("div");
+      woLabel.className = "layer-label wo-layer-label";
+      woLabel.textContent = `${clientDisplayName(client)} Work Orders`;
+      woRow.appendChild(woLabel);
+      children.appendChild(woRow);
+
+      const woSub = document.createElement("div");
+      woSub.className = "symbol-category-list";
+      woSub.hidden = !woExpanded;
+
+      Object.keys(statusColors).forEach(status => {
+        const statusRow = document.createElement("div");
+        statusRow.className = "layer-row symbol-category-row";
+
+        const statusVisible = workOrderStatusVisible(client, status);
+        statusRow.appendChild(createEyeButton(statusVisible, `${clientDisplayName(client)} ${status} work orders`, () => {
+          const map = state.woStatusVisibility.get(client) || new Map();
+          map.set(status, !statusVisible);
+          state.woStatusVisibility.set(client, map);
+          renderWorkOrderGraphics();
+          renderCustomLayerTree();
+        }));
+
+        const swatch = document.createElement("div");
+        swatch.className = "layer-symbol";
+        swatch.innerHTML = `<span class="wo-symbol-swatch" style="--wo-color:${statusColors[status]}"></span>`;
+        statusRow.appendChild(swatch);
+
+        const statusLabel = document.createElement("div");
+        statusLabel.className = "layer-label category-label";
+        statusLabel.textContent = status;
+        statusRow.appendChild(statusLabel);
+        woSub.appendChild(statusRow);
+      });
+
+      children.appendChild(woSub);
+      clientWrap.appendChild(children);
+      els.layerList.appendChild(clientWrap);
     }
+
+    await Promise.allSettled(previewJobs);
+  }
+
+  function applyDistrictFilter() {
+    applyOperationalVisibility();
+
+    if (state.selected) {
+      const selectedClient = clientKeyForLayer(state.selected.layer);
+      if (!selectedClientAllows(selectedClient) || !state.selected.layer.visible) {
+        clearSelection();
+      }
+    }
+
+    renderWorkOrderGraphics();
+    renderCustomLayerTree();
   }
 
   async function changeBasemap() {
@@ -503,7 +932,7 @@
       const result = await layer.queryFeatures({
         geometry: extent,
         spatialRelationship: "intersects",
-        where: "1=1",
+        where: layer.__guidelineCategoryWhere || "1=1",
         outFields: ["*"],
         returnGeometry: true,
         num: 5
@@ -638,8 +1067,21 @@
   function renderWorkOrderGraphics() {
     if (!state.woGraphicsLayer) return;
     state.woGraphicsLayer.removeAll();
+
     let items = state.workOrders.filter(w => w.geometry);
-    if (state.woFilter !== "all") items = items.filter(w => w.status === state.woFilter);
+
+    if (state.woFilter !== "all") {
+      items = items.filter(w => w.status === state.woFilter);
+    }
+
+    items = items.filter(w => {
+      const client = w.client || "OTHER";
+      if (!selectedClientAllows(client)) return false;
+      if (!workOrderClientVisible(client)) return false;
+      if (!workOrderStatusVisible(client, w.status)) return false;
+      return true;
+    });
+
     require(["esri/Graphic", "esri/geometry/Point", "esri/geometry/Polyline", "esri/geometry/Polygon"], (Graphic, Point, Polyline, Polygon) => {
       items.forEach(w => {
         let geometry = null;
@@ -649,11 +1091,15 @@
           else if (w.geometryType === "polygon") geometry = Polygon.fromJSON(w.geometry);
         } catch {}
         if (!geometry) return;
+
         const color = statusColors[w.status] || "#c9891b";
         state.woGraphicsLayer.add(new Graphic({
           geometry,
           symbol: symbolForGeometry(geometry, color, false),
-          attributes: { __guidelineWoId: w.id }
+          attributes: {
+            __guidelineWoId: w.id,
+            __guidelineClient: w.client || "OTHER"
+          }
         }));
       });
     });
@@ -705,7 +1151,9 @@
       if (!fields.length) return [];
 
       const escaped = term.replaceAll("'", "''");
-      const where = fields.map(f => `${f.name} LIKE '%${escaped}%'`).join(" OR ");
+      const searchWhere = fields.map(f => `${f.name} LIKE '%${escaped}%'`).join(" OR ");
+      const categoryWhere = layer.__guidelineCategoryWhere;
+      const where = categoryWhere ? `(${categoryWhere}) AND (${searchWhere})` : searchWhere;
       const res = await layer.queryFeatures({
         where,
         outFields: ["*"],
@@ -813,19 +1261,20 @@
     require([
       "esri/WebMap",
       "esri/views/MapView",
-      "esri/widgets/LayerList",
       "esri/widgets/Home",
       "esri/widgets/Expand",
       "esri/widgets/Legend",
       "esri/layers/GraphicsLayer",
       "esri/Basemap",
-      "esri/geometry/Extent"
-    ], async (WebMap, MapView, LayerList, Home, Expand, Legend, GraphicsLayer, Basemap, Extent) => {
+      "esri/geometry/Extent",
+      "esri/symbols/support/symbolUtils"
+    ], async (WebMap, MapView, Home, Expand, Legend, GraphicsLayer, Basemap, Extent, symbolUtils) => {
       try {
         const webmap = new WebMap({ portalItem: { id: WEBMAP_ID } });
         state.webmap = webmap;
         state.Basemap = Basemap;
         state.Extent = Extent;
+        state.symbolUtils = symbolUtils;
         state.woGraphicsLayer = new GraphicsLayer({ title: "Demo Work Orders", listMode: "hide" });
         state.selectionLayer = new GraphicsLayer({ title: "Selected Asset", listMode: "hide" });
         webmap.addMany([state.woGraphicsLayer, state.selectionLayer]);
@@ -858,8 +1307,10 @@
         seedLayerOriginalVisibility();
         console.info(`Guideline POC: ${state.featureLayers.length} operational FeatureLayers indexed for selection/search.`);
 
-        const layerList = new LayerList({ view, container: "layerList" });
-        state.layerList = layerList;
+        initializeCustomLayerState();
+        applyOperationalVisibility();
+        await renderCustomLayerTree();
+
         const legend = new Legend({ view });
         view.ui.add(new Expand({ view, content: legend, expandTooltip: "Legend" }), "bottom-left");
         view.ui.add(new Home({ view }), "top-left");

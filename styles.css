@@ -147,3 +147,136 @@ button { cursor: pointer; }
 #detailPanel.open #detailEmpty { display: none !important; }
 #detailPanel.open #assetDetail { display: block !important; }
 #assetDetail:not([hidden]) { display: block !important; }
+
+
+/* v0.1.7 custom nested layer tree */
+.layer-section #layerList {
+  max-height: 48vh;
+  overflow: auto;
+  padding: 4px 0 2px;
+}
+.client-layer-group + .client-layer-group {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.layer-row {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: 26px 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.layer-row:hover {
+  background: #f5f8fa;
+}
+.client-layer-row {
+  min-height: 34px;
+  padding: 3px 2px;
+}
+.client-label {
+  font-weight: 800;
+  color: #33444f;
+}
+.asset-layer-row {
+  padding-left: 12px;
+}
+.symbol-category-row {
+  padding-left: 30px;
+  min-height: 27px;
+}
+.layer-label {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.25;
+  color: #44535d;
+  overflow-wrap: anywhere;
+}
+.category-label {
+  color: #61717c;
+}
+.wo-layer-label {
+  font-weight: 700;
+}
+.layer-eye,
+.layer-arrow {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  padding: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: #52636e;
+}
+.layer-eye:hover,
+.layer-arrow:hover {
+  background: #eaf1f5;
+}
+.layer-eye:disabled {
+  opacity: .28;
+  cursor: default;
+}
+.layer-eye svg,
+.layer-arrow svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.layer-eye.is-hidden {
+  color: #9aa8b1;
+}
+.layer-arrow svg {
+  transition: transform .15s ease;
+}
+.layer-arrow svg.expanded {
+  transform: rotate(180deg);
+}
+.layer-symbol {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+}
+.layer-symbol > * {
+  max-width: 24px;
+  max-height: 24px;
+}
+.symbol-category-list[hidden],
+.client-layer-children[hidden] {
+  display: none !important;
+}
+.wo-symbol-swatch {
+  width: 12px;
+  height: 12px;
+  display: block;
+  border-radius: 50%;
+  background: var(--wo-color);
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(50,65,75,.4);
+}
+.symbol-fallback {
+  width: 12px;
+  height: 12px;
+  display: block;
+  border: 2px solid #667784;
+}
+.symbol-point {
+  border-radius: 50%;
+}
+.symbol-polyline {
+  width: 16px;
+  height: 0;
+  border-width: 0 0 3px;
+}
+.symbol-polygon {
+  background: rgba(102,119,132,.18);
+}

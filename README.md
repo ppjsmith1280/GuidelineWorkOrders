@@ -1,10 +1,10 @@
-# Guideline Asset Management – Work Order POC v0.1.6
+# Guideline Asset Management – Work Order POC v0.1.7
 
 GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 
 `5e88ffc05f0f4bbb968e852d816e09a0`
 
-## v0.1.6 changes
+## v0.1.7 changes
 
 - ArcGIS stock popups are disabled.
 - Clicking a mapped FeatureLayer asset now opens the custom in-app Asset / Work Order panel.
@@ -27,7 +27,7 @@ GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 ## GitHub Pages
 
 1. Unzip this package.
-2. Upload the **contents** of the `Guideline_WO_POC_v0.1.6` folder to the repository root.
+2. Upload the **contents** of the `Guideline_WO_POC_v0.1.7` folder to the repository root.
 3. In GitHub, open **Settings → Pages**.
 4. Choose **Deploy from a branch**.
 5. Select `main` and `/ (root)`.
@@ -45,13 +45,13 @@ GitHub Pages proof-of-concept using the existing public ArcGIS Web Map:
 The production app can replace live multi-layer ArcGIS searching with a D1 asset index, while ArcGIS remains the source of truth for geometry and authoritative asset attributes. A scheduled synchronization job can discover newly added/updated ArcGIS assets and update the search index.
 
 
-## v0.1.6 corrective fixes
+## v0.1.7 corrective fixes
 
 This release corrects three issues found during live Web Map testing:
 
 1. **Client filtering no longer hides basemap content**
    - v0.1.1 used `webmap.allLayers`, which includes basemap/reference layers.
-   - v0.1.6 discovers FeatureLayers from `webmap.layers` (operational layers) only.
+   - v0.1.7 discovers FeatureLayers from `webmap.layers` (operational layers) only.
 
 2. **ArcGIS popup is fully removed**
    - `MapView.popupEnabled` is false.
@@ -65,9 +65,9 @@ This release corrects three issues found during live Web Map testing:
 Asset selection also now resolves hit-test layers more defensively using the result layer, graphic layer, source layer, layer id, service URL, and title.
 
 
-## v0.1.6 asset-selection fix
+## v0.1.7 asset-selection fix
 
-v0.1.6 keeps all v0.1.2 fixes and changes mapped asset selection to a two-stage process:
+v0.1.7 keeps all v0.1.2 fixes and changes mapped asset selection to a two-stage process:
 
 1. ArcGIS `hitTest()` is used first for fast selection.
 2. If the returned display graphic cannot be resolved to an operational FeatureLayer, the app queries a small map extent around the click against the currently visible operational asset layers.
@@ -77,9 +77,9 @@ This fallback is intended to handle Web Map layers whose displayed hit-test grap
 The right-side panel is explicitly opened after a successful selection. ArcGIS remains read-only.
 
 
-## v0.1.6 side-panel selection correction
+## v0.1.7 side-panel selection correction
 
-v0.1.6 removes `hitTest()` as a dependency for mapped asset selection.
+v0.1.7 removes `hitTest()` as a dependency for mapped asset selection.
 
 For every map click, the application now:
 
@@ -95,15 +95,15 @@ The side panel also uses explicit `display` state in addition to the HTML `hidde
 ArcGIS remains read-only.
 
 
-## v0.1.6 selection-to-panel bridge
+## v0.1.7 selection-to-panel bridge
 
-v0.1.6 is intentionally based on v0.1.4 because that release successfully:
+v0.1.7 is intentionally based on v0.1.4 because that release successfully:
 
 - selected real assets,
 - highlighted the selected feature,
 - identified the correct ArcGIS layer.
 
-The change in v0.1.6 is only the bridge from that working selection into the custom right panel.
+The change in v0.1.7 is only the bridge from that working selection into the custom right panel.
 
 After the v0.1.4 spatial selection returns `{ layer, graphic }`, the app now:
 
@@ -118,3 +118,23 @@ After the v0.1.4 spatial selection returns `{ layer, graphic }`, the app now:
 Therefore Asset ID heuristics, field formatting, or WO lookup cannot prevent a valid selected ArcGIS feature from appearing in the panel.
 
 ArcGIS remains read-only.
+
+
+## v0.1.7 nested layer tree and work-order layers
+
+- Replaces the stock ArcGIS LayerList with a custom Guideline layer tree.
+- Layers are automatically grouped under HCMUD 71 and FBLID 2.
+- Each client has:
+  - a collapse/expand control,
+  - a master visibility eye,
+  - nested asset layers,
+  - a `[Client] Work Orders` pseudo-layer.
+- Single-symbol ArcGIS layers show the actual ArcGIS symbol immediately left of the layer label.
+- Multi-symbol ArcGIS layers show an expand arrow in that position. Expanding reveals every renderer category with its ArcGIS symbol and an individual visibility eye.
+- Unique-value/class-break category visibility is applied through the ArcGIS LayerView filter when a SQL clause can be derived from the renderer.
+- Work orders now store the client key derived from the selected ArcGIS layer.
+- Each client's Work Orders layer can be hidden/shown independently.
+- Expanding a Work Orders layer reveals Open, In Progress, Overdue, and Complete status symbols, each with its own visibility control.
+- Client dropdown filtering, layer visibility, and work-order-layer visibility work together without changing the basemap.
+
+ArcGIS remains read-only. Demo work orders remain browser-local.
